@@ -4,44 +4,112 @@
 # Test script for RabbitMQ Delayed Message Exchange plugin
 # Tests basic functionality: publish with delay, verify delivery
 #
-# Usage: ./test_dmx_basic.sh [num_messages] [min_delay_seconds] [max_delay_seconds]
-#   num_messages: Number of messages to publish (default: 1)
-#   min_delay_seconds: Minimum delay in seconds (default: 3)
-#   max_delay_seconds: Maximum delay in seconds (default: 3)
-#
 
 set -o errexit
 set -o nounset
 set -o pipefail
 
-# Show help
-if [[ "${1:-}" == "--help" ]] || [[ "${1:-}" == "-h" ]]
-then
+# Default values
+declare -i num_messages=1
+declare -i min_delay=3
+declare -i max_delay=3
+declare -a hosts=("localhost:15672")
+declare -i verbosity=0
+
+# Parse arguments
+show_usage() {
   cat <<EOF
-Usage: $0 [num_messages] [min_delay_seconds] [max_delay_seconds]
+Usage: $0 [OPTIONS]
 
 Test RabbitMQ Delayed Message Exchange plugin by publishing messages with
 random delays and verifying they are delivered correctly.
 
-Arguments:
-  num_messages        Number of messages to publish (default: 1)
-  min_delay_seconds   Minimum delay in seconds (default: 3)
-  max_delay_seconds   Maximum delay in seconds (default: 3)
+Options:
+  -n, --num-messages NUM    Number of messages to publish (default: 1)
+  -min, --min-delay SEC     Minimum delay in seconds (default: 3)
+  -max, --max-delay SEC     Maximum delay in seconds (default: 3)
+  -c, --connect HOST:PORT   RabbitMQ host:port (default: localhost:15672)
+                            Can be specified multiple times for round-robin
+  -v, --verbose             Increase verbosity (can be repeated)
+  -h, --help                Show this help message
 
 Examples:
-  $0                  # Publish 1 message with 3s delay
-  $0 5                # Publish 5 messages with 3s delay each
-  $0 10 1 5           # Publish 10 messages with random delays 1-5s
-  $0 20 0 10          # Publish 20 messages with random delays 0-10s
+  $0                                    # Use all defaults
+  $0 -n 5                               # Publish 5 messages with 3s delay
+  $0 -n 10 -min 1 -max 5                # 10 messages, random delays 1-5s
+  $0 -n 20 -min 0 -max 10               # 20 messages, random delays 0-10s
+  $0 -n 5 -v                            # Show message details
+  $0 -c host1:15672 -c host2:15672 -n 5 # Round-robin across 2 hosts
 
 EOF
-  exit 0
-fi
+}
 
-# Parse arguments
-declare -ri num_messages="${1:-1}"
-declare -ri min_delay="${2:-3}"
-declare -ri max_delay="${3:-3}"
+while (( $# > 0 ))
+do
+  case "$1" in
+    -h|--help)
+      show_usage
+      exit 0
+      ;;
+    -n|--num-messages)
+      if [[ -z "${2:-}" ]]
+      then
+        printf "Error: --num-messages requires a value\n" >&2
+        exit 1
+      fi
+      num_messages=$2
+      shift 2
+      ;;
+    -min|--min-delay)
+      if [[ -z "${2:-}" ]]
+      then
+        printf "Error: --min-delay requires a value\n" >&2
+        exit 1
+      fi
+      min_delay=$2
+      shift 2
+      ;;
+    -max|--max-delay)
+      if [[ -z "${2:-}" ]]
+      then
+        printf "Error: --max-delay requires a value\n" >&2
+        exit 1
+      fi
+      max_delay=$2
+      shift 2
+      ;;
+    -c|--connect)
+      if [[ -z "${2:-}" ]]
+      then
+        printf "Error: --connect requires a value\n" >&2
+        exit 1
+      fi
+      # Validate host:port format
+      if [[ ! "$2" =~ ^[^:]+:[0-9]+$ ]]
+      then
+        printf "Error: --connect must be in format host:port (got: %s)\n" "$2" >&2
+        exit 1
+      fi
+      # First --connect replaces default
+      if (( ${#hosts[@]} == 1 )) && [[ "${hosts[0]}" == "localhost:15672" ]]
+      then
+        hosts=("$2")
+      else
+        hosts+=("$2")
+      fi
+      shift 2
+      ;;
+    -v|--verbose)
+      (( ++verbosity ))
+      shift
+      ;;
+    *)
+      printf "Error: Unknown option: %s\n" "$1" >&2
+      show_usage
+      exit 1
+      ;;
+  esac
+done
 
 # Validate arguments
 if (( num_messages < 1 ))
@@ -63,16 +131,34 @@ then
 fi
 
 # Configuration
-declare -r rabbitmq_host="localhost"
-declare -r rabbitmq_port="15672"
 declare -r rabbitmq_user="guest"
 declare -r rabbitmq_pass="guest"
 declare -r vhost="%2F"
-declare -r base_url="http://${rabbitmq_host}:${rabbitmq_port}/api"
 
 declare -r exchange_name="test-delayed-exchange"
 declare -r queue_name="test-delayed-queue"
 declare -r routing_key="test-key"
+
+# Round-robin host index
+declare -i current_host_index=0
+
+# Function to get next host in round-robin fashion
+get_next_host() {
+  local host_port="${hosts[$current_host_index]}"
+  local host="${host_port%:*}"
+  local port="${host_port#*:}"
+
+  current_host_index=$(( (current_host_index + 1) % ${#hosts[@]} ))
+
+  printf "%s:%s" "$host" "$port"
+}
+
+# Function to build base URL for current host
+get_base_url() {
+  local host_port
+  host_port=$(get_next_host)
+  printf "http://%s/api" "$host_port"
+}
 
 # Colors for output
 declare -r green='\033[0;32m'
@@ -111,6 +197,8 @@ publish_message() {
   local -r timestamp=$(date '+%Y-%m-%d %H:%M:%S')
   local -r message_body="Message $msg_id published at $timestamp"
   local -i http_code
+  local base_url
+  base_url=$(get_base_url)
 
   http_code=$(curl -s -u "$rabbitmq_user:$rabbitmq_pass" \
     -w "%{http_code}" \
@@ -146,6 +234,9 @@ printf "\n"
 # Step 1: Create delayed message exchange
 log_step "1/5" "Creating delayed message exchange: $exchange_name"
 declare -i http_code
+declare base_url
+base_url=$(get_base_url)
+
 http_code=$(curl -s -u "$rabbitmq_user:$rabbitmq_pass" \
   -w "%{http_code}" \
   -o /dev/null \
@@ -173,6 +264,8 @@ printf "\n"
 # Step 2: Create or purge queue
 log_step "2/5" "Preparing queue: $queue_name"
 declare -i queue_check_code
+base_url=$(get_base_url)
+
 queue_check_code=$(curl -s -u "$rabbitmq_user:$rabbitmq_pass" \
   -w "%{http_code}" \
   -o /dev/null \
@@ -182,6 +275,8 @@ if (( queue_check_code == 200 ))
 then
   log_info "Queue exists, purging..."
   declare -i purge_code
+  base_url=$(get_base_url)
+
   purge_code=$(curl -s -u "$rabbitmq_user:$rabbitmq_pass" \
     -w "%{http_code}" \
     -o /dev/null \
@@ -198,6 +293,8 @@ then
 else
   log_info "Queue does not exist, creating..."
   declare -i create_code
+  base_url=$(get_base_url)
+
   create_code=$(curl -s -u "$rabbitmq_user:$rabbitmq_pass" \
     -w "%{http_code}" \
     -o /dev/null \
@@ -225,6 +322,8 @@ printf "\n"
 # Step 3: Bind queue to exchange
 log_step "3/5" "Binding queue to exchange with routing key: $routing_key"
 declare -i bind_code
+base_url=$(get_base_url)
+
 bind_code=$(curl -s -u "$rabbitmq_user:$rabbitmq_pass" \
   -w "%{http_code}" \
   -o /dev/null \
@@ -278,7 +377,7 @@ log_success "All messages published successfully"
 printf "\n"
 
 # Step 5: Wait for delivery
-declare -ri wait_time=$((max_delay_used + 1))
+declare -ri wait_time=$((max_delay_used + 5))
 log_step "5/5" "Waiting $wait_time seconds for message delivery..."
 
 for (( i=1; i<=wait_time; i++ ))
@@ -293,6 +392,8 @@ printf "\n"
 # Step 6: Fetch and verify messages
 log_info "Fetching messages from queue..."
 declare response
+base_url=$(get_base_url)
+
 response=$(curl -s -u "$rabbitmq_user:$rabbitmq_pass" \
   -X POST \
   -H "content-type:application/json" \
@@ -310,15 +411,25 @@ message_count=$(jq 'length' <<< "$response")
 if (( message_count == num_messages ))
 then
   log_success "Received $message_count/$num_messages messages!"
-  printf "\nMessage details:\n"
-  jq '.' <<< "$response"
+
+  if (( verbosity >= 1 ))
+  then
+    printf "\nMessage details:\n"
+    jq '.' <<< "$response"
+  fi
+
   printf "\n%b==========================================\n" "$green"
   printf "TEST PASSED\n"
   printf "==========================================%b\n" "$nc"
 else
   log_error "Expected $num_messages messages, received $message_count"
-  printf "\nResponse:\n"
-  jq '.' <<< "$response"
+
+  if (( verbosity >= 1 ))
+  then
+    printf "\nResponse:\n"
+    jq '.' <<< "$response"
+  fi
+
   printf "\n%b==========================================\n" "$red"
   printf "TEST FAILED\n"
   printf "==========================================%b\n" "$nc"
