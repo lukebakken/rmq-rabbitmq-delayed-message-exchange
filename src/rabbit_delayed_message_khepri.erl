@@ -19,7 +19,7 @@
 %% Khepri path structure for delayed messages:
 %% [rabbitmq, delayed_messages, VHost, Exchange, TimestampBucket, MessageId]
 %%
-%% Example: [rabbitmq, delayed_messages, <<"/">>, <<"my-exchange">>, 
+%% Example: [rabbitmq, delayed_messages, <<"/">>, <<"my-exchange">>,
 %%           <<"2025-12-23-15-00">>, <<"550e8400-e29b-41d4-a716-446655440000">>]
 
 -define(DELAYED_MESSAGES_ROOT, [rabbitmq, delayed_messages]).
@@ -46,10 +46,10 @@ store_message_metadata(Metadata) ->
       delivery_timestamp := DeliveryTimestamp,
       vhost := VHost,
       exchange := Exchange} = Metadata,
-    
+
     Bucket = timestamp_to_bucket(DeliveryTimestamp),
     Path = build_message_path(VHost, Exchange, Bucket, MessageId),
-    
+
     case rabbit_khepri:put(Path, Metadata) of
         ok ->
             ?LOG_DEBUG("Stored delayed message metadata in Khepri: ~ts", [MessageId]),
@@ -86,10 +86,10 @@ delete_message_metadata(Metadata) ->
       delivery_timestamp := DeliveryTimestamp,
       vhost := VHost,
       exchange := Exchange} = Metadata,
-    
+
     Bucket = timestamp_to_bucket(DeliveryTimestamp),
     Path = build_message_path(VHost, Exchange, Bucket, MessageId),
-    
+
     case rabbit_khepri:delete(Path) of
         ok ->
             ?LOG_DEBUG("Deleted delayed message metadata from Khepri: ~ts", [MessageId]),
@@ -133,10 +133,10 @@ timestamp_to_bucket(TimestampMs) ->
     %% Format: "YYYY-MM-DD-HH-MM" (e.g., "2025-12-23-15-00")
     {{Year, Month, Day}, {Hour, Minute, _Second}} =
         calendar:system_time_to_universal_time(TimestampMs, millisecond),
-    
+
     %% Round down to nearest 15-minute interval
     BucketMinute = (Minute div 15) * 15,
-    
+
     iolist_to_binary(
         io_lib:format("~4..0B-~2..0B-~2..0B-~2..0B-~2..0B",
                      [Year, Month, Day, Hour, BucketMinute])).

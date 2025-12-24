@@ -2,43 +2,33 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%%  Copyright (c) 2007-2020 VMware, Inc. or its affiliates.  All rights reserved.
+%%  Copyright (c) 2007-2025 Broadcom. All Rights Reserved. The term "Broadcom" refers to Broadcom Inc. and/or its subsidiaries. All rights reserved.
 %%
-
-%% NOTE that this module uses os:timestamp/0 but in the future Erlang
-%% will have a new time API.
-%% See:
-%% https://www.erlang.org/documentation/doc-7.0-rc1/erts-7.0/doc/html/erlang.html#now-0
-%% and
-%% https://www.erlang.org/documentation/doc-7.0-rc1/erts-7.0/doc/html/time_correction.html
 
 -module(rabbit_delayed_message).
 -include_lib("rabbit_common/include/rabbit.hrl").
 -include_lib("kernel/include/logger.hrl").
 
 -rabbit_boot_step({?MODULE,
-                   [{description, "exchange delayed message mnesia setup"},
-                    {mfa, {?MODULE, setup_mnesia, []}},
-                    {cleanup, {?MODULE, disable_plugin, []}},
-                    {requires, pre_flight}]}).
+                   [{description, "delayed message storage setup"},
+                    {mfa, {?MODULE, setup_storage, []}},
+                    {cleanup, {?MODULE, cleanup_storage, []}},
+                    {requires, rabbit_khepri}]}).
 
 -behaviour(gen_server).
 
--export([start_link/0, delay_message/3, setup_mnesia/0, disable_plugin/0, go/0]).
+-export([start_link/0, delay_message/3, setup_storage/0, cleanup_storage/0, go/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
          code_change/3]).
 -export([messages_delayed/1]).
 
 %% For testing, debugging and manual use
--export([refresh_config/0,
-         table_name/0,
-         index_table_name/0]).
+-export([refresh_config/0]).
 
 -import(rabbit_delayed_message_utils, [swap_delay_header/1]).
 
 -type t_reference() :: reference().
 -type delay() :: non_neg_integer().
-
 
 -spec delay_message(rabbit_types:exchange(),
                     mc:state(),
@@ -48,30 +38,17 @@
 -spec internal_delay_message(t_reference(),
                              rabbit_types:exchange(),
                              mc:state(),
-                             delay()) ->
-                                    nodelay | {ok, t_reference()}.
+                             delay(),
+                             module(),
+                             term()) ->
+                                    {{ok, t_reference()}, t_reference(), term()}.
 
--define(TABLE_NAME, append_to_atom(?MODULE, node())).
--define(INDEX_TABLE_NAME, append_to_atom(?TABLE_NAME, "_index")).
-
--record(state, {timer,
-                stats_state}).
-
--record(delay_key,
-        { timestamp, %% timestamp delay
-          exchange   %% rabbit_types:exchange()
-        }).
-
--record(delay_entry,
-        { delay_key, %% delay_key record
-          delivery,  %% the message delivery
-          ref        %% ref to make records distinct for 'bag' semantics.
-        }).
-
--record(delay_index,
-        { delay_key, %% delay_key record
-          const      %% record must have two fields
-        }).
+-record(state, {
+    timer,
+    stats_state,
+    storage_backend,
+    storage_state
+}).
 
 %%--------------------------------------------------------------------
 
@@ -85,56 +62,29 @@ delay_message(Exchange, Message, Delay) ->
     gen_server:call(?MODULE, {delay_message, Exchange, Message, Delay},
                     infinity).
 
-setup_mnesia() ->
-    case rabbit_khepri:is_enabled() of
-        true ->
-            ensure_mnesia_running();
-        false ->
-            %% Mnesia should already be running
-            ok
-    end,
-    _ = mnesia:create_table(?TABLE_NAME, [{record_name, delay_entry},
-                                          {attributes,
-                                           record_info(fields, delay_entry)},
-                                          {type, bag},
-                                          {disc_copies, [node()]}]),
-    _ = mnesia:create_table(?INDEX_TABLE_NAME, [{record_name, delay_index},
-                                                {attributes,
-                                                 record_info(fields, delay_index)},
-                                                {type, ordered_set},
-                                                {disc_copies, [node()]}]),
-    rabbit_table:wait([?TABLE_NAME, ?INDEX_TABLE_NAME]).
+setup_storage() ->
+    %% Storage backend initialization happens in init/1
+    %% This function exists for boot step compatibility
+    ok.
 
-ensure_mnesia_running() ->
-    case rabbit_mnesia:is_running() of
-        false ->
-            ensure_mnesia_disc_schema(),
-            rabbit_mnesia:start_mnesia(_CheckConsistency = false);
-        true ->
-            ok
-    end.
-
-ensure_mnesia_disc_schema() ->
-    case mnesia:system_info(use_dir) of
-        true ->
-            %% There is a disc schema already
-            ok;
-        false ->
-            rabbit_misc:ensure_ok(mnesia:create_schema([node()]),
-                                  {?MODULE, cannot_create_mnesia_schema})
-    end.
-
-disable_plugin() ->
-    _ = mnesia:delete_table(?INDEX_TABLE_NAME),
-    _ = mnesia:delete_table(?TABLE_NAME),
+cleanup_storage() ->
+    %% Cleanup happens in terminate/1
+    %% This function exists for boot step compatibility
     ok.
 
 messages_delayed(Exchange) ->
+    %% Query Khepri for count of delayed messages for this exchange
     ExchangeName = Exchange#exchange.name,
-    MatchHead = #delay_entry{delay_key = make_key('_', #exchange{name = ExchangeName, _ = '_'}),
-                             delivery  = '_', ref       = '_'},
-    Delays = mnesia:dirty_select(?TABLE_NAME, [{MatchHead, [], [true]}]),
-    length(Delays).
+    VHost = (Exchange#exchange.name)#resource.virtual_host,
+
+    %% TODO: Optimize this - currently lists all messages
+    AllMessages = rabbit_delayed_message_khepri:list_all_messages(),
+    Filtered = lists:filter(
+        fun(#{exchange := Ex, vhost := V}) ->
+            Ex =:= ExchangeName andalso V =:= VHost
+        end,
+        AllMessages),
+    length(Filtered).
 
 refresh_config() ->
     gen_server:call(?MODULE, refresh_config).
@@ -142,39 +92,74 @@ refresh_config() ->
 %%--------------------------------------------------------------------
 
 init([]) ->
-    _ = recover(),
-    {ok, #state{timer = not_set}}.
+    %% Initialize storage backend
+    StorageBackend = rabbit_delayed_message_storage_disk,
+    StorageConfig = #{},
+
+    case StorageBackend:init(StorageConfig) of
+        {ok, StorageState} ->
+            ?LOG_INFO("Delayed message exchange: storage backend initialized (~tp)",
+                     [StorageBackend]),
+            _ = recover(),
+            {ok, #state{timer = maybe_delay_first(),
+                       storage_backend = StorageBackend,
+                       storage_state = StorageState}};
+        {error, Reason} ->
+            ?LOG_ERROR("Delayed message exchange: failed to initialize storage backend: ~tp",
+                      [Reason]),
+            {stop, {storage_init_failed, Reason}}
+    end.
 
 handle_call({delay_message, Exchange, Message, Delay},
-            _From, State = #state{timer = CurrTimer}) ->
-    Reply = {ok, NewTimer} = internal_delay_message(CurrTimer, Exchange, Message, Delay),
-    State2 = State#state{timer = NewTimer},
+            _From, State = #state{timer = CurrTimer,
+                                 storage_backend = Backend,
+                                 storage_state = StorageState}) ->
+    {Reply, NewTimer, NewStorageState} =
+        internal_delay_message(CurrTimer, Exchange, Message, Delay, Backend, StorageState),
+    State2 = State#state{timer = NewTimer, storage_state = NewStorageState},
     {reply, Reply, State2};
+
 handle_call(refresh_config, _From, State) ->
     {reply, ok, refresh_config(State)};
+
 handle_call(_Req, _From, State) ->
     {reply, unknown_request, State}.
 
 handle_cast(go, State) ->
     State2 = refresh_config(State),
     {noreply, State2#state{timer = maybe_delay_first()}};
+
 handle_cast(_C, State) ->
     {noreply, State}.
 
-handle_info({timeout, _TimerRef, {deliver, Key}}, State) ->
-    case mnesia:dirty_read(?TABLE_NAME, Key) of
-        [] ->
-            mnesia:dirty_delete(?INDEX_TABLE_NAME, Key);
-        Deliveries ->
-            _ = route(Key, Deliveries, State),
-            mnesia:dirty_delete(?TABLE_NAME, Key),
-            mnesia:dirty_delete(?INDEX_TABLE_NAME, Key)
-    end,
-    {noreply, State#state{timer = maybe_delay_first()}};
+handle_info({timeout, _TimerRef, {deliver, _DeliveryTimestamp}},
+            State = #state{storage_backend = Backend,
+                          storage_state = StorageState}) ->
+    %% Timer fired - deliver all messages with delivery_timestamp <= now
+    Now = erlang:system_time(milli_seconds),
+
+    %% Get all messages ready for delivery
+    AllMessages = rabbit_delayed_message_khepri:list_all_messages(),
+    ReadyMessages = lists:filter(
+        fun(#{delivery_timestamp := TS}) -> TS =< Now end,
+        AllMessages),
+
+    %% Deliver each message
+    NewStorageState = lists:foldl(
+        fun(Metadata, AccStorageState) ->
+            deliver_message(Metadata, Backend, AccStorageState, State)
+        end,
+        StorageState,
+        ReadyMessages),
+
+    {noreply, State#state{timer = maybe_delay_first(),
+                         storage_state = NewStorageState}};
+
 handle_info(_I, State) ->
     {noreply, State}.
 
-terminate(_, _) ->
+terminate(_, #state{storage_backend = Backend, storage_state = StorageState}) ->
+    Backend:terminate(StorageState),
     ok.
 
 code_change(_, State, _) -> {ok, State}.
@@ -182,98 +167,158 @@ code_change(_, State, _) -> {ok, State}.
 %%--------------------------------------------------------------------
 
 maybe_delay_first() ->
-    case mnesia:dirty_first(?INDEX_TABLE_NAME) of
-        %% destructuring to prevent matching '$end_of_table'
-        #delay_key{timestamp = FirstTS} = Key2 ->
-            %% there are messages that will expire and need to be delivered
+    case rabbit_delayed_message_khepri:get_next_message() of
+        {ok, #{delivery_timestamp := FirstTS}} ->
+            %% There are messages that will expire and need to be delivered
             Now = erlang:system_time(milli_seconds),
-            start_timer(FirstTS - Now, Key2);
-        _ ->
-            %% nothing to do
+            start_timer(FirstTS - Now, FirstTS);
+        {error, no_messages} ->
+            %% Nothing to do
             not_set
     end.
 
-route(#delay_key{exchange = Ex}, Deliveries, State) ->
-    ExName = Ex#exchange.name,
-    lists:map(fun (#delay_entry{delivery = Msg0}) ->
-                      Msg1 = case Msg0 of
-                               #delivery{message = BasicMessage} ->
-                                     BasicMessage;
-                               _MC ->
-                                   Msg0
-                           end,
-                      Msg2 = swap_delay_header(Msg1),
-                      Dests = rabbit_exchange:route(Ex, Msg2),
-                      Qs = rabbit_db_queue:get_targets(Dests),
-                      _ = rabbit_queue_type:deliver(Qs, Msg2, #{}, stateless),
-                      bump_routed_stats(ExName, Qs, State)
-              end, Deliveries).
+deliver_message(Metadata, Backend, StorageState, State) ->
+    #{message_id := MessageId,
+      exchange := ExchangeBinName,
+      vhost := VHost} = Metadata,
 
-internal_delay_message(CurrTimer, Exchange, Message, Delay) ->
-    Now = erlang:system_time(milli_seconds),
-    %% keys are timestamps in milliseconds,in the future
-    DelayTS = Now + Delay,
-    mnesia:dirty_write(?INDEX_TABLE_NAME,
-                       make_index(DelayTS, Exchange)),
-    mnesia:dirty_write(?TABLE_NAME,
-                       make_delay(DelayTS, Exchange, Message)),
-    case CurrTimer of
-        not_set ->
-            %% No timer in progress, so we start our own.
-            {ok, maybe_delay_first()};
-        _ ->
-            case erlang:read_timer(CurrTimer) of
-                false ->
-                    %% Timer is already expired.  Handler will be invoked soon.
-                    {ok, CurrTimer};
-                CurrMS when Delay < CurrMS ->
-                    %% Current timer lasts longer that new message delay
-                    _ = erlang:cancel_timer(CurrTimer),
-                    {ok, start_timer(Delay, make_key(DelayTS, Exchange))};
-                _ ->
-                    %% Timer is set to expire sooner than this
-                    %% message's scheduled delivery time.
-                    {ok, CurrTimer}
-            end
+    %% Fetch payload from storage backend
+    case Backend:fetch_message(MessageId, StorageState) of
+        {ok, PayloadBinary, StorageState2} ->
+            %% Reconstruct exchange resource
+            ExchangeResource = #resource{virtual_host = VHost,
+                                        kind = exchange,
+                                        name = ExchangeBinName},
+
+            %% Get exchange record
+            case rabbit_db_exchange:get(ExchangeResource) of
+                {ok, Exchange} ->
+                    %% Deserialize message
+                    Message = binary_to_term(PayloadBinary),
+
+                    %% Swap delay header (set to negative)
+                    Message2 = swap_delay_header(Message),
+
+                    %% Route and deliver
+                    Dests = rabbit_exchange:route(Exchange, Message2),
+                    Qs = rabbit_db_queue:get_targets(Dests),
+                    _ = rabbit_queue_type:deliver(Qs, Message2, #{}, stateless),
+
+                    %% Bump stats
+                    ExName = Exchange#exchange.name,
+                    bump_routed_stats(ExName, Qs, State),
+
+                    ?LOG_DEBUG("Delayed message exchange: delivered message ~ts", [MessageId]),
+
+                    %% Delete from Khepri
+                    _ = rabbit_delayed_message_khepri:delete_message_metadata(Metadata),
+
+                    %% Delete from storage
+                    case Backend:delete_message(MessageId, StorageState2) of
+                        {ok, StorageState3} ->
+                            StorageState3;
+                        {error, Reason} ->
+                            ?LOG_WARNING("Failed to delete message payload ~ts: ~tp",
+                                        [MessageId, Reason]),
+                            StorageState2
+                    end;
+                {error, not_found} ->
+                    ?LOG_WARNING("Exchange not found for delayed message ~ts, cleaning up",
+                                [MessageId]),
+                    _ = rabbit_delayed_message_khepri:delete_message_metadata(Metadata),
+                    _ = Backend:delete_message(MessageId, StorageState2),
+                    StorageState2
+            end;
+        {error, Reason} ->
+            ?LOG_ERROR("Failed to fetch message payload ~ts: ~tp",
+                      [MessageId, Reason]),
+            %% TODO: Handle fetch failures - DLQ? Retry?
+            StorageState
     end.
 
-%% Key will be used upon message receipt to fetch
-%% the deliveries from the database
-start_timer(Delay, Key) ->
-    erlang:start_timer(erlang:max(0, Delay), self(), {deliver, Key}).
+internal_delay_message(CurrTimer, Exchange, Message, Delay, Backend, StorageState) ->
+    Now = erlang:system_time(milli_seconds),
+    DelayTS = Now + Delay,
 
-make_delay(DelayTS, Exchange, Delivery) ->
-    #delay_entry{delay_key = make_key(DelayTS, Exchange),
-                 delivery  = Delivery,
-                 ref       = make_ref()}.
+    %% Generate unique message ID
+    MessageId = rabbit_guid:gen(),
 
-make_index(DelayTS, Exchange) ->
-    #delay_index{delay_key = make_key(DelayTS, Exchange),
-                 const = true}.
+    %% Extract message payload
+    %% TODO: Properly serialize mc:state() for storage
+    Payload = term_to_binary(Message),
 
-make_key(DelayTS, Exchange) ->
-    #delay_key{timestamp = DelayTS,
-               exchange  = Exchange}.
+    %% Build metadata
+    ExchangeName = Exchange#exchange.name,
+    _VHost = ExchangeName#resource.virtual_host,
+    _RoutingKey = case mc:routing_keys(Message) of
+                     [RK | _] -> RK;
+                     [] -> <<>>
+                 end,
+    _Headers = mc:get_annotation(headers, Message, #{}),
 
-append_to_atom(Atom, Append) when is_atom(Append) ->
-    append_to_atom(Atom, atom_to_list(Append));
-append_to_atom(Atom, Append) when is_list(Append) ->
-    list_to_atom(atom_to_list(Atom) ++ Append).
+    Metadata = #{
+        message_id => MessageId,
+        delivery_timestamp => DelayTS,
+        routing_key => _RoutingKey,
+        headers => _Headers,
+        exchange => ExchangeName#resource.name,
+        vhost => _VHost,
+        created_at => Now
+    },
+
+    %% Store metadata in Khepri
+    case rabbit_delayed_message_khepri:store_message_metadata(Metadata) of
+        ok ->
+            %% Store payload in storage backend
+            case Backend:store_message(MessageId, Payload, StorageState) of
+                {ok, NewStorageState} ->
+                    %% Update timer if needed
+                    NewTimer = case CurrTimer of
+                        not_set ->
+                            %% No timer in progress, start one
+                            maybe_delay_first();
+                        _ ->
+                            case erlang:read_timer(CurrTimer) of
+                                false ->
+                                    %% Timer already expired, handler will fire soon
+                                    CurrTimer;
+                                CurrMS when Delay < CurrMS ->
+                                    %% New message expires sooner, restart timer
+                                    _ = erlang:cancel_timer(CurrTimer),
+                                    start_timer(Delay, DelayTS);
+                                _ ->
+                                    %% Current timer expires sooner
+                                    CurrTimer
+                            end
+                    end,
+                    {{ok, NewTimer}, NewTimer, NewStorageState};
+                {error, Reason} ->
+                    ?LOG_ERROR("Failed to store message payload ~ts: ~tp",
+                              [MessageId, Reason]),
+                    %% TODO: Should we delete from Khepri on storage failure?
+                    {{ok, CurrTimer}, CurrTimer, StorageState}
+            end;
+        {error, Reason} ->
+            ?LOG_ERROR("Failed to store message metadata ~ts in Khepri: ~tp",
+                      [MessageId, Reason]),
+            {{ok, CurrTimer}, CurrTimer, StorageState}
+    end.
+
+start_timer(Delay, DeliveryTimestamp) ->
+    erlang:start_timer(erlang:max(0, Delay), self(), {deliver, DeliveryTimestamp}).
 
 recover() ->
-    %% topology recovery has already happened, we have to recover state for any durable
-    %% consistent hash exchanges since plugin activation was moved later in boot process
-    %% starting with RabbitMQ 3.8.4
+    %% Topology recovery has already happened
+    %% Recover bindings for durable delayed message exchanges
     case list_exchanges() of
         {error, Reason} ->
-            ?LOG_ERROR(
-               "Delayed message exchange: "
-               "failed to recover durable bindings of one of the exchanges, reason: ~p",
-               [Reason]);
+            ?LOG_ERROR("Delayed message exchange: "
+                      "failed to recover durable bindings, reason: ~tp",
+                      [Reason]);
         Xs ->
             ?LOG_DEBUG("Delayed message exchange: "
-                       "have ~b durable exchanges to recover",
-                       [length(Xs)]),
+                      "have ~b durable exchanges to recover",
+                      [length(Xs)]),
             [recover_exchange_and_bindings(X) || X <- lists:usort(Xs)]
     end.
 
@@ -285,39 +330,15 @@ recover_exchange_and_bindings(#exchange{name = XName} = X) ->
     Bindings = rabbit_binding:list_for_source(XName),
     _ = [rabbit_exchange_type_delayed_message:add_binding(none, X, B)
          || B <- lists:usort(Bindings)],
-    ?LOG_DEBUG("Delayed message exchange: "
-               "recovered bindings for ~s",
-               [rabbit_misc:rs(XName)]).
+    ?LOG_DEBUG("Delayed message exchange: recovered bindings for ~ts",
+              [rabbit_misc:rs(XName)]).
 
-%% These metrics are normally bumped from a channel process via which
-%% the publish actually happened. In the special case of delayed
-%% message delivery, the singleton delayed_message gen_server does
-%% this.
-%%
-%% Difference from delivering from a channel:
-%%
-%% The channel process keeps track of the state and monitors each
-%% queue it routed to. When the channel is notified of a queue DOWN,
-%% it marks all core metrics for that channel + queue as deleted.
-%% Monitoring all queues would be overkill for the delayed message
-%% gen_server, so this delete marking does not happen in this
-%% case. Still `rabbit_core_metrics_gc' will periodically scan all the
-%% core metrics and eventually delete entries for non-existing queues
-%% so there won't be any metrics leak. `rabbit_core_metrics_gc' will
-%% also delete the entries when this process is not alive ie when the
-%% plugin is disabled.
 bump_routed_stats(ExName, Qs, State) ->
     rabbit_global_counters:messages_routed(amqp091, length(Qs)),
     case rabbit_event:stats_level(State, #state.stats_state) of
         fine ->
             [begin
                  QName = amqqueue:get_name(Q),
-                 %% Channel PID is just an identifier in the metrics
-                 %% DB. However core metrics GC will delete entries
-                 %% with a not-alive PID, and by the time the delayed
-                 %% message gets delivered the original channel
-                 %% process might be long gone, hence we need a live
-                 %% PID in the key.
                  FakeChannelId = self(),
                  Key = {FakeChannelId, {QName, ExName}},
                  rabbit_core_metrics:channel_stats(queue_exchange_stats, publish, Key, 1)
@@ -330,9 +351,3 @@ bump_routed_stats(ExName, Qs, State) ->
 
 refresh_config(State) ->
     rabbit_event:init_stats_timer(State, #state.stats_state).
-
-table_name() ->
-    ?TABLE_NAME.
-
-index_table_name() ->
-    ?INDEX_TABLE_NAME.

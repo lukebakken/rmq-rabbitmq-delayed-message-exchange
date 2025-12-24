@@ -256,17 +256,17 @@ Add TODO comments for production error handling.
 ## Migration Checklist
 
 - [x] Create storage behavior module
-- [ ] Implement disk storage backend
-- [ ] Create Khepri operations module
-- [ ] Refactor main gen_server
-  - [ ] Remove Mnesia setup
-  - [ ] Add storage backend init
-  - [ ] Update delay_message/3
-  - [ ] Update timer management
-  - [ ] Update delivery logic
-  - [ ] Update recovery logic
-- [ ] Update boot steps
-- [ ] Remove all Mnesia references
+- [x] Implement disk storage backend
+- [x] Create Khepri operations module
+- [x] Refactor main gen_server
+  - [x] Remove Mnesia setup
+  - [x] Add storage backend init
+  - [x] Update delay_message/3
+  - [x] Update timer management
+  - [x] Update delivery logic
+  - [x] Update recovery logic
+- [x] Update boot steps
+- [x] Remove all Mnesia references
 - [ ] Update Makefile (if needed)
 - [ ] Test on single node
 - [ ] Test on 3-node cluster
