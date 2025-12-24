@@ -255,7 +255,7 @@ Add TODO comments for production error handling.
 
 ## Migration Checklist
 
-- [ ] Create storage behavior module
+- [x] Create storage behavior module
 - [ ] Implement disk storage backend
 - [ ] Create Khepri operations module
 - [ ] Refactor main gen_server
