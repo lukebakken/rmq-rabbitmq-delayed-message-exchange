@@ -10,7 +10,7 @@
 
 -include_lib("kernel/include/logger.hrl").
 
--export([init/1, store_message/3, fetch_message/2, delete_message/2, terminate/1]).
+-export([init/1, store_message/4, fetch_message/3, delete_message/3, terminate/1]).
 
 %% Shared storage directory for all nodes in cluster
 %% For local dev clusters: /tmp/rabbitmq-test-instances/delayed_messages
@@ -30,22 +30,30 @@
 -spec init(rabbit_delayed_message_storage:config()) ->
     {ok, state()} | {error, term()}.
 init(Config) ->
-    BaseDir = maps:get(base_dir, Config, ?DEFAULT_STORAGE_DIR),
-    case filelib:ensure_dir(filename:join(BaseDir, "dummy")) of
-        ok ->
-            ?LOG_INFO("Delayed message disk storage initialized at ~ts", [BaseDir]),
-            {ok, #disk_storage_state{base_dir = BaseDir}};
-        {error, Reason} ->
-            ?LOG_ERROR("Failed to create delayed message storage directory ~ts: ~tp",
-                      [BaseDir, Reason]),
-            {error, {cannot_create_directory, BaseDir, Reason}}
+    try
+        BaseDir = maps:get(base_dir, Config, ?DEFAULT_STORAGE_DIR),
+        case filelib:ensure_dir(filename:join(BaseDir, "dummy")) of
+            ok ->
+                ?LOG_INFO("Delayed message disk storage initialized at ~ts", [BaseDir]),
+                {ok, #disk_storage_state{base_dir = BaseDir}};
+            {error, Reason} ->
+                ?LOG_ERROR("Failed to create delayed message storage directory ~ts: ~tp",
+                          [BaseDir, Reason]),
+                {error, {cannot_create_directory, BaseDir, Reason}}
+        end
+    catch
+        Class:Error:Stack ->
+            ?LOG_ERROR("Exception during disk storage init: ~p:~p~n~p",
+                      [Class, Error, Stack]),
+            {error, {init_exception, Class, Error}}
     end.
 
 -spec store_message(rabbit_delayed_message_storage:message_id(),
                    rabbit_delayed_message_storage:payload(),
+                   rabbit_delayed_message_storage:message_metadata(),
                    state()) ->
     {ok, state()} | {error, term()}.
-store_message(MessageId, Payload, State = #disk_storage_state{base_dir = BaseDir}) ->
+store_message(MessageId, Payload, _Metadata, State = #disk_storage_state{base_dir = BaseDir}) ->
     FilePath = message_file_path(BaseDir, MessageId),
     case file:write_file(FilePath, Payload) of
         ok ->
@@ -61,9 +69,10 @@ store_message(MessageId, Payload, State = #disk_storage_state{base_dir = BaseDir
     end.
 
 -spec fetch_message(rabbit_delayed_message_storage:message_id(),
+                   rabbit_delayed_message_storage:message_metadata(),
                    state()) ->
     {ok, rabbit_delayed_message_storage:payload(), state()} | {error, term()}.
-fetch_message(MessageId, State = #disk_storage_state{base_dir = BaseDir}) ->
+fetch_message(MessageId, _Metadata, State = #disk_storage_state{base_dir = BaseDir}) ->
     FilePath = message_file_path(BaseDir, MessageId),
     case file:read_file(FilePath) of
         {ok, Payload} ->
@@ -83,9 +92,10 @@ fetch_message(MessageId, State = #disk_storage_state{base_dir = BaseDir}) ->
     end.
 
 -spec delete_message(rabbit_delayed_message_storage:message_id(),
+                    rabbit_delayed_message_storage:message_metadata(),
                     state()) ->
     {ok, state()} | {error, term()}.
-delete_message(MessageId, State = #disk_storage_state{base_dir = BaseDir}) ->
+delete_message(MessageId, _Metadata, State = #disk_storage_state{base_dir = BaseDir}) ->
     FilePath = message_file_path(BaseDir, MessageId),
     case file:delete(FilePath) of
         ok ->

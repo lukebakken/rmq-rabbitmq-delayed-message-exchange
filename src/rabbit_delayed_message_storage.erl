@@ -16,28 +16,40 @@
 -type state() :: term().
 -type error_reason() :: term().
 
--export_type([message_id/0, payload/0, config/0, state/0]).
+-type message_metadata() :: #{
+    message_id := binary(),
+    delivery_timestamp := integer(),
+    routing_key := binary(),
+    exchange := binary(),
+    vhost := binary(),
+    created_at := integer()
+}.
+
+-export_type([message_id/0, payload/0, config/0, state/0, message_metadata/0]).
 
 %% Initialize storage backend with configuration
 -callback init(Config :: config()) ->
     {ok, State :: state()} |
     {error, Reason :: error_reason()}.
 
-%% Store message payload
+%% Store message payload with metadata
 -callback store_message(MessageId :: message_id(),
                        Payload :: payload(),
+                       Metadata :: message_metadata(),
                        State :: state()) ->
     {ok, NewState :: state()} |
     {error, Reason :: error_reason()}.
 
 %% Fetch message payload
 -callback fetch_message(MessageId :: message_id(),
+                       Metadata :: message_metadata(),
                        State :: state()) ->
     {ok, Payload :: payload(), NewState :: state()} |
     {error, Reason :: error_reason()}.
 
 %% Delete message payload
 -callback delete_message(MessageId :: message_id(),
+                        Metadata :: message_metadata(),
                         State :: state()) ->
     {ok, NewState :: state()} |
     {error, Reason :: error_reason()}.

@@ -20,7 +20,7 @@
 -rabbit_boot_step({rabbit_delayed_message_supervisor,
                    [{description, "delayed message sup"},
                     {mfa,         {rabbit_sup, start_child, [?MODULE]}},
-                    {requires,    pre_flight},
+                    {requires,    database},
                     {cleanup,     {?MODULE, stop, []}}]}).
 
 start_link() ->

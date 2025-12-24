@@ -106,9 +106,13 @@ init([]) ->
     %% Register globally so we can be found from any node
     case global:register_name(rabbit_delayed_message, self()) of
         yes ->
-            %% Initialize storage backend
-            StorageBackend = rabbit_delayed_message_storage_disk,
-            StorageConfig = #{},
+            %% Get storage backend from application config
+            StorageBackend = application:get_env(rabbitmq_delayed_message_exchange,
+                                                storage_backend,
+                                                rabbit_delayed_message_storage_disk),
+            StorageConfig = application:get_env(rabbitmq_delayed_message_exchange,
+                                               storage_config,
+                                               #{}),
 
             case StorageBackend:init(StorageConfig) of
                 {ok, StorageState} ->
@@ -204,7 +208,7 @@ deliver_message(Metadata, Backend, StorageState, State) ->
     HexId = binary:encode_hex(MessageId, lowercase),
 
     %% Fetch payload from storage backend
-    case Backend:fetch_message(MessageId, StorageState) of
+    case Backend:fetch_message(MessageId, Metadata, StorageState) of
         {ok, PayloadBinary, StorageState2} ->
             %% Reconstruct exchange resource
             ExchangeResource = #resource{virtual_host = VHost,
@@ -235,7 +239,7 @@ deliver_message(Metadata, Backend, StorageState, State) ->
                     _ = rabbit_delayed_message_khepri:delete_message_metadata(Metadata),
 
                     %% Delete from storage
-                    case Backend:delete_message(MessageId, StorageState2) of
+                    case Backend:delete_message(MessageId, Metadata, StorageState2) of
                         {ok, StorageState3} ->
                             StorageState3;
                         {error, Reason} ->
@@ -247,7 +251,7 @@ deliver_message(Metadata, Backend, StorageState, State) ->
                     ?LOG_WARNING("Exchange not found for delayed message ~s, cleaning up",
                                 [HexId]),
                     _ = rabbit_delayed_message_khepri:delete_message_metadata(Metadata),
-                    _ = Backend:delete_message(MessageId, StorageState2),
+                    _ = Backend:delete_message(MessageId, Metadata, StorageState2),
                     StorageState2
             end;
         {error, Reason} ->
@@ -288,7 +292,7 @@ internal_delay_message(CurrTimer, Exchange, Message, Delay, Backend, StorageStat
     case rabbit_delayed_message_khepri:store_message_metadata(Metadata) of
         ok ->
             %% Store payload in storage backend
-            case Backend:store_message(MessageId, Payload, StorageState) of
+            case Backend:store_message(MessageId, Payload, Metadata, StorageState) of
                 {ok, NewStorageState} ->
                     %% Update timer if needed
                     NewTimer = case CurrTimer of
