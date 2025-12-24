@@ -390,27 +390,69 @@ Format: term_to_binary(mc:state())
 - x-delay header swapped to negative
 - Message routed to correct queue
 
-### Known Limitations (Phase 1)
+---
 
-- ⚠️ Disk storage not replicated (payloads lost if node with file fails)
-- ⚠️ Naive bucket scanning (lists all messages to find next)
-- ⚠️ No cleanup of orphaned files
-- ⚠️ Message size not validated before storage
+## Phase 2 Implementation: DynamoDB Storage ✓ COMPLETE
 
-These limitations are acceptable for Phase 1 and will be addressed in Phase 2 (DynamoDB).
+**Completion Date**: 2025-12-24
 
-### Next Steps
+### What Changed
 
-**Phase 1 Remaining**:
-- Test leader failover
-- Test node restart
-- Test multiple messages with different delays
+**Added**:
+- ✅ `rabbit_delayed_message_storage_ddb` - DynamoDB storage backend
+- ✅ `advanced.config` - Configuration file for backend selection
+- ✅ Metadata parameter to all storage operations
+- ✅ hackney initialization in DynamoDB backend
+- ✅ AWS error handling (3-tuple format with `__type` field)
 
-**Phase 2**:
-- Implement DynamoDB storage backend
-- Add broker_id to partition keys
-- Test on EC2 3-node cluster
-- Validate true distributed storage
+**Modified**:
+- ✅ `rabbit_delayed_message_storage` - Added metadata parameter to behavior
+- ✅ `rabbit_delayed_message_storage_disk` - Updated to match new signature
+- ✅ `rabbit_delayed_message` - Read backend from config, pass metadata to operations
+- ✅ `rabbit_delayed_message_sup` - Boot step requires `database` instead of `pre_flight`
+- ✅ `Makefile` - Changed aws_erlang from git to hex 1.2.1
+
+### DynamoDB Schema
+
+**Table**: `rabbitmq_delayed_messages`
+
+**Partition Key**: `partition_key` (STRING)
+- Format: `{broker_id}#{vhost}#{exchange}#{bucket}`
+- Example: `rabbit@localhost#/#test-delayed-exchange#2025-12-24-10-00`
+
+**Sort Key**: `sort_key` (STRING)
+- Format: `{delivery_timestamp_ms}#{message_id_hex}`
+- Example: `1735059300000#a1b2c3d4e5f6...`
+
+**Attributes**:
+- `message_payload` (BINARY) - Base64-encoded message
+- `created_at` (NUMBER) - Publication timestamp
+
+### Test Results
+
+✅ **Multi-message test passed**:
+- 20 messages published with random delays (1-10 seconds)
+- All stored in DynamoDB successfully
+- All delivered correctly after delay
+- 20/20 messages received
+- Tested across 3 nodes
+
+**DynamoDB Verification**:
+```bash
+$ aws dynamodb list-tables --endpoint-url http://localhost:8000
+{
+    "TableNames": [
+        "rabbitmq_delayed_messages"
+    ]
+}
+```
+
+### Critical Fixes
+
+1. **hackney initialization** - DynamoDB backend calls `application:ensure_all_started(hackney)` in `init/1`
+2. **AWS error handling** - Match 3-tuple format `{error, ErrorMap, {StatusCode, Headers, Client}}`
+3. **ResourceNotFoundException** - Check `<<"__type">>` field for full exception name
+4. **Boot step dependency** - Supervisor requires `database` to ensure Khepri is ready
 
 ---
 

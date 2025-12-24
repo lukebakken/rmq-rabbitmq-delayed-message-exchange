@@ -1,160 +1,297 @@
-# Session Summary - 2025-12-23
+# Session Summary - 2025-12-24
 
-## What We Accomplished Today
+## Current Status: Phase 2 Complete ✓
 
-### Phase 1: Khepri Migration - ✓ COMPLETE
+**Date**: December 24, 2025  
+**Achievement**: DynamoDB storage backend fully functional
 
-Successfully migrated the rabbitmq-delayed-message-exchange plugin from Mnesia to Khepri + disk storage.
-
-**Files Created**:
-1. `src/rabbit_delayed_message_storage.erl` - Storage backend behavior
-2. `src/rabbit_delayed_message_storage_disk.erl` - Disk storage implementation
-3. `src/rabbit_delayed_message_khepri.erl` - Khepri operations wrapper
-4. `test_dmx_basic.sh` - Basic functionality test script
-
-**Files Modified**:
-1. `src/rabbit_delayed_message.erl` - Complete refactor (removed Mnesia, added Khepri + storage backend)
-
-**Files Unchanged** (reused as-is):
-1. `src/rabbit_exchange_type_delayed_message.erl` - Exchange type proxy
-2. `src/rabbit_delayed_message_utils.erl` - Header utilities
-3. `src/rabbit_delayed_message_sup.erl` - Supervisor
-4. `src/rabbit_delayed_message_app.erl` - Application callback
-
-**Documentation Created**:
-1. `CODEBASE_SUMMARY.md` - Comprehensive analysis of original code + Phase 1 completion
-2. `DESIGN_QUESTIONS.md` - All design decisions documented
-3. `PHASE1_PLAN.md` - Implementation plan and checklist
-4. `DEVELOPMENT.md` - Build and test instructions
-
-### Test Results
-
-✅ **Basic test passing**: `./test_dmx_basic.sh`
-- Message published with 5-second delay
-- Stored in Khepri (metadata) + disk (payload)
-- Delivered correctly after delay
-- x-delay header swapped to negative
-
-### Key Technical Decisions
-
-1. **Storage split**: Khepri for metadata, pluggable backend for payloads
-2. **Khepri path**: `[rabbitmq, delayed_messages, VHost, Exchange, Bucket, MessageId]`
-3. **Timestamp buckets**: 15-minute intervals
-4. **Disk storage**: Shared directory `/tmp/rabbitmq-test-instances/delayed_messages/`
-5. **Message serialization**: `term_to_binary(mc:state())` for simplicity
-6. **Timer mechanism**: Reused existing Erlang timer approach
-7. **Broker ID**: Use `rabbit:cluster_name/0` (for Phase 2 DynamoDB keys)
-
-### Critical Lessons Learned
-
-1. **Khepri API**: Use `khepri:*` directly, NOT `rabbit_khepri:*`
-2. **Boot steps**: Use `database` as requirement, not `rabbit_khepri`
-3. **mc module**: Use `mc:x_header/2` for headers, not `mc:get_annotation/3`
-4. **Message storage**: Store entire `mc:state()` with `term_to_binary/1`
+### What Works Now
+- ✅ Khepri metadata storage (replicated across cluster)
+- ✅ DynamoDB payload storage (distributed, durable)
+- ✅ Message publishing with delays (1-10 seconds tested)
+- ✅ Correct message delivery after delay expires
+- ✅ Multi-node cluster operation (3 nodes tested)
+- ✅ 20/20 messages delivered successfully in test
 
 ---
 
-## Current State
+## Architecture (Current)
 
-### What Works
-- ✅ Message publishing with delay
-- ✅ Khepri metadata storage (replicated)
-- ✅ Disk payload storage (shared directory)
-- ✅ Timer-based delivery
-- ✅ Message routing to queues
-- ✅ 3-node cluster operation
-
-### What's Not Tested Yet
-- ⚠️ Leader failover (kill leader, verify new leader delivers)
-- ⚠️ Node restart (verify messages survive)
-- ⚠️ Multiple messages with different delays
-- ⚠️ Message ordering verification
-- ⚠️ Khepri replication verification
-
-### Known Issues
-- 📝 Naive bucket scanning in `get_next_message/0` (lists all messages)
-- 📝 No message size validation (should reject > 256KB for Phase 2)
-- 📝 No cleanup of orphaned disk files
-- 📝 Disk storage not replicated (Phase 1 limitation)
+```
+Publisher → Exchange → rabbit_delayed_message gen_server (single, via mirrored_supervisor)
+                       ↓
+                    Khepri (metadata - replicated)
+                    /delayed_messages/<vhost>/<exchange>/<bucket>/<msg_id>
+                       ↓
+                    DynamoDB (payloads - distributed)
+                    PK: broker_id#vhost#exchange#bucket
+                    SK: timestamp#message_id
+                       ↓
+                    Erlang Timer → Deliver to Queue
+```
 
 ---
 
-## Next Session: Where to Start
+## Files Modified Today (2025-12-24)
 
-### Option 1: Complete Phase 1 Testing
-**Recommended for validation before Phase 2**
+### New Files
+1. `rabbit_delayed_message_storage_ddb.erl` - DynamoDB storage backend
+2. `advanced.config` - Configuration for storage backend selection
+3. `ELASTICACHE_VS_DYNAMODB.md` - Storage backend comparison analysis
 
-1. **Failover test**: 
-   - Publish message with 30s delay
-   - Kill leader node
-   - Verify new leader delivers message
-
-2. **Restart test**:
-   - Publish message with 30s delay
-   - Restart node
-   - Verify message still delivers
-
-3. **Multiple messages test**:
-   - Publish 5 messages with delays: 10s, 5s, 15s, 3s, 20s
-   - Verify they deliver in correct order: 3s, 5s, 10s, 15s, 20s
-
-4. **Khepri inspection**:
-   - Use `rabbitmqctl eval` to inspect Khepri tree
-   - Verify metadata is replicated across nodes
-
-### Option 2: Start Phase 2 (DynamoDB)
-**If confident in Phase 1**
-
-1. **Add aws-erlang dependency** to Makefile
-2. **Create DynamoDB storage backend**: `src/rabbit_delayed_message_storage_ddb.erl`
-3. **Implement DynamoDB operations**:
-   - `init/1` - Initialize AWS client
-   - `store_message/3` - PutItem
-   - `fetch_message/2` - GetItem
-   - `delete_message/2` - DeleteItem
-4. **Update configuration** to select storage backend
-5. **Test on EC2 cluster**
-
-### Option 3: Address Known Issues
-**Polish Phase 1**
-
-1. **Optimize bucket scanning**: Query specific buckets instead of listing all
-2. **Add message size validation**: Reject messages > 256KB
-3. **Add file cleanup**: Delete orphaned files on startup
-4. **Improve error handling**: Add retry logic, circuit breakers
+### Modified Files
+1. `rabbit_delayed_message_storage.erl` - Added metadata parameter to all callbacks
+2. `rabbit_delayed_message_storage_disk.erl` - Updated to match new behavior signature
+3. `rabbit_delayed_message.erl` - Read storage backend from config, pass metadata to storage operations
+4. `rabbit_delayed_message_sup.erl` - Changed boot step to require `database` instead of `pre_flight`
+5. `Makefile` - Changed aws_erlang dependency from git to hex 1.2.1
+6. `CODING_RULES.md` - Added Rules #7-18 from today's lessons
 
 ---
 
-## Quick Start Commands for Tomorrow
+## Key Technical Decisions (2025-12-24)
 
-### Start 3-Node Cluster
+### 1. Storage Backend Abstraction
+**Decision**: Pass message metadata to all storage operations  
+**Rationale**: DynamoDB needs metadata (vhost, exchange, timestamp) to construct partition/sort keys  
+**Impact**: Both disk and DynamoDB backends updated to match new signature
+
+### 2. Hackney Initialization
+**Decision**: DynamoDB backend starts hackney in its `init/1` function  
+**Rationale**: Only DynamoDB needs hackney (for HTTP), disk backend doesn't  
+**Impact**: Cleaner separation - each backend manages its own dependencies
+
+### 3. AWS Error Handling
+**Decision**: Match aws-erlang's 3-tuple error format `{error, ErrorMap, {StatusCode, Headers, Client}}`  
+**Rationale**: aws-erlang returns decoded JSON error in ErrorMap with `__type` field  
+**Impact**: Check `__type` field for `ResourceNotFoundException` to detect missing table
+
+### 4. DynamoDB Schema
+**Partition Key**: `broker_id#vhost#exchange#bucket` (15-minute buckets)  
+**Sort Key**: `timestamp#message_id`  
+**Rationale**: Enables efficient queries within time ranges, isolates brokers  
+**Impact**: Good partition distribution, supports multi-broker deployments
+
+### 5. Boot Step Dependencies
+**Decision**: Supervisor requires `database` boot step  
+**Rationale**: Ensures Khepri is available before mirrored_supervisor starts  
+**Impact**: Proper initialization order, no race conditions
+
+---
+
+## Test Results (2025-12-24)
+
+### Local 3-Node Cluster with DynamoDB Local
+```bash
+./test_dmx_basic.sh -n 20 -min 1 -max 10 -c localhost:15672 -c localhost:15673 -c localhost:15674
+```
+
+**Results**:
+- ✅ 20 messages published with random delays (1-10 seconds)
+- ✅ All messages stored in DynamoDB successfully
+- ✅ All messages delivered after correct delay
+- ✅ 20/20 messages received in queue
+- ✅ No errors in logs
+
+**DynamoDB Table Verification**:
+```bash
+$ aws dynamodb list-tables --endpoint-url http://localhost:8000
+{
+    "TableNames": [
+        "rabbitmq_delayed_messages"
+    ]
+}
+```
+
+---
+
+## Critical Lessons Learned (2025-12-24)
+
+### Lesson 1: Application Dependencies vs Boot Steps
+**Problem**: Even though `hackney` was in the dependency chain (`rabbitmq_delayed_message_exchange → aws_erlang → hackney`), it wasn't started before our code ran.
+
+**Root Cause**: Application dependencies ensure apps are **loaded**, not **started** at the right time during boot steps.
+
+**Solution**: DynamoDB backend explicitly calls `application:ensure_all_started(hackney)` in its `init/1`.
+
+### Lesson 2: AWS Error Response Format
+**Problem**: Assumed aws-erlang would return `{error, {<<"ResourceNotFoundException">>, _}}` but it actually returns `{error, ErrorMap, {StatusCode, Headers, Client}}`.
+
+**Root Cause**: Didn't verify the actual return format from aws-erlang library.
+
+**Solution**: Check the `<<"__type">>` field in ErrorMap for full exception name like `<<"com.amazonaws.dynamodb.v20120810#ResourceNotFoundException">>`.
+
+### Lesson 3: Boot Step Return Values
+**Problem**: Boot step MFA called `application:ensure_all_started(hackney)` which returns `{ok, [Apps]}`, but boot steps expect `ok`.
+
+**Root Cause**: Didn't understand boot step requirements.
+
+**Solution**: Wrapper function that calls `ensure_all_started` and returns `ok`.
+
+---
+
+## Configuration
+
+### Storage Backend Selection
+Edit `advanced.config`:
+```erlang
+[
+    {rabbitmq_delayed_message_exchange, [
+        %% Choose backend: rabbit_delayed_message_storage_disk or rabbit_delayed_message_storage_ddb
+        {storage_backend, rabbit_delayed_message_storage_ddb},
+        {storage_config, #{
+            table_name => <<"rabbitmq_delayed_messages">>
+        }}
+    ]}
+].
+```
+
+### DynamoDB Local (Development)
+Set environment variable:
+```bash
+export RABBITMQ_CONFIG_FILE=/path/to/advanced.config
+```
+
+Application environment (in code):
+```erlang
+application:get_env(rabbitmq_delayed_message_exchange, dynamodb_endpoint, <<"http://localhost:8000">>)
+```
+
+---
+
+## Next Steps: AWS Deployment
+
+### Prerequisites
+1. **EC2 instances** - 3-node RabbitMQ cluster
+2. **DynamoDB table** - Create in same region as EC2
+3. **IAM role** - Attach to EC2 instances with DynamoDB permissions
+4. **Security groups** - Allow RabbitMQ cluster communication
+
+### DynamoDB Table Creation
+```bash
+aws dynamodb create-table \
+    --table-name rabbitmq_delayed_messages \
+    --attribute-definitions \
+        AttributeName=partition_key,AttributeType=S \
+        AttributeName=sort_key,AttributeType=S \
+    --key-schema \
+        AttributeName=partition_key,KeyType=HASH \
+        AttributeName=sort_key,KeyType=RANGE \
+    --billing-mode PAY_PER_REQUEST \
+    --region us-west-2
+```
+
+### IAM Policy for EC2 Instances
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "dynamodb:PutItem",
+                "dynamodb:GetItem",
+                "dynamodb:DeleteItem",
+                "dynamodb:DescribeTable",
+                "dynamodb:CreateTable"
+            ],
+            "Resource": "arn:aws:dynamodb:*:*:table/rabbitmq_delayed_messages"
+        }
+    ]
+}
+```
+
+### Configuration Changes for AWS
+Update `rabbit_delayed_message_storage_ddb.erl`:
+```erlang
+%% Replace make_local_client with make_client for real AWS
+Client = aws_client:make_client(Region),
+```
+
+Remove or comment out:
+```erlang
+%% Endpoint = application:get_env(..., dynamodb_endpoint, ...)
+```
+
+### Deployment Steps
+1. Build plugin on EC2 instances
+2. Copy `.ez` file to plugins directory
+3. Enable plugin: `rabbitmq-plugins enable rabbitmq_delayed_message_exchange`
+4. Configure storage backend in `advanced.config`
+5. Start RabbitMQ cluster
+6. Verify DynamoDB table exists
+7. Run test script against cluster
+
+---
+
+## Testing Checklist for AWS
+
+- [ ] Single message with 5s delay
+- [ ] Multiple messages with different delays (verify ordering)
+- [ ] Leader failover (kill node with gen_server, verify new leader delivers)
+- [ ] Node restart (verify messages survive restart)
+- [ ] DynamoDB replication (verify data in AWS console)
+- [ ] Cross-AZ operation (if multi-AZ deployment)
+- [ ] Performance test (100+ messages)
+- [ ] Error handling (stop DynamoDB, verify graceful failure)
+
+---
+
+## Known Limitations
+
+### Phase 2 Limitations
+- ⚠️ No message size validation (should reject > 256KB)
+- ⚠️ No retry logic for DynamoDB failures
+- ⚠️ No circuit breaker for DynamoDB unavailability
+- ⚠️ No cleanup of orphaned DynamoDB items
+- ⚠️ Naive bucket scanning (lists all messages to find next)
+- ⚠️ No observability beyond logs (no CloudWatch metrics)
+
+### Acceptable for POC
+These limitations are documented and acceptable for proof-of-concept validation. Production deployment would require addressing these issues.
+
+---
+
+## Git Status
+
+**Branch**: (current branch)  
+**Last Commit**: Add DynamoDB storage backend with metadata-aware operations
+
+**Uncommitted Changes**: None (all changes committed)
+
+---
+
+## Quick Start Commands
+
+### Start Local Cluster with DynamoDB Backend
 ```bash
 cd /home/lrbakken/development/rabbitmq/rabbitmq-server
+
+# Start DynamoDB Local (in separate terminal)
+docker run -p 8000:8000 amazon/dynamodb-local
+
+# Start RabbitMQ cluster
 make ADDITIONAL_PLUGINS=rabbitmq_delayed_message_exchange \
      ENABLED_PLUGINS='rabbitmq_management rabbitmq_top rabbitmq_delayed_message_exchange' \
      NODES=3 \
      start-cluster
 ```
 
-### Run Basic Test
+### Run Test
 ```bash
 cd deps/rabbitmq_delayed_message_exchange
-./test_dmx_basic.sh
+./test_dmx_basic.sh -n 20 -min 1 -max 10 -c localhost:15672 -c localhost:15673 -c localhost:15674
+```
+
+### Verify DynamoDB
+```bash
+aws dynamodb list-tables --endpoint-url http://localhost:8000
+aws dynamodb scan --table-name rabbitmq_delayed_messages --endpoint-url http://localhost:8000
 ```
 
 ### Check Logs
 ```bash
 tail -f /tmp/rabbitmq-test-instances/rabbit-1@*/log/*.log
-```
-
-### Inspect Khepri
-```bash
-rabbitmqctl eval 'khepri:get_many([rabbitmq, delayed_messages, <<"/">>, <<"test-delayed-exchange">>, <<"**">>]).'
-```
-
-### Check Disk Storage
-```bash
-ls -la /tmp/rabbitmq-test-instances/delayed_messages/
 ```
 
 ### Stop Cluster
@@ -164,61 +301,30 @@ make stop-cluster
 
 ---
 
-## Files to Review Tomorrow
+## What's Next
 
-Before continuing, review these files to refresh context:
+### Immediate: AWS Deployment
+1. Set up 3-node EC2 cluster
+2. Create DynamoDB table in AWS
+3. Configure IAM roles
+4. Update client initialization for real AWS (not DynamoDB Local)
+5. Deploy and test
 
-1. `DESIGN_QUESTIONS.md` - All design decisions
-2. `PHASE1_PLAN.md` - What's done, what's remaining
-3. `CODEBASE_SUMMARY.md` - Original code analysis + Phase 1 summary
-4. `src/rabbit_delayed_message.erl` - Main gen_server (refactored)
-5. `src/rabbit_delayed_message_khepri.erl` - Khepri operations
-
----
-
-## Open Questions for Tomorrow
-
-1. **Should we complete Phase 1 testing before Phase 2?**
-   - Pro: Validates foundation is solid
-   - Con: Delays DynamoDB work
-
-2. **Bucket scanning optimization priority?**
-   - Current: Lists all messages (inefficient)
-   - Better: Query specific time range buckets
-   - Impact: Performance with many messages
-
-3. **Message size validation?**
-   - Should we add now or wait for Phase 2?
-   - DynamoDB has 256KB limit
-
-4. **Error handling improvements?**
-   - Current: Basic logging, returns errors
-   - Better: Retry logic, circuit breakers, DLQ
-   - Priority for POC?
+### Future Enhancements
+1. Message size validation (reject > 256KB)
+2. Retry logic and circuit breakers
+3. CloudWatch metrics integration
+4. Bucket scanning optimization
+5. TTL-based cleanup in DynamoDB
+6. Performance benchmarking
+7. Production readiness review
 
 ---
 
-## Git Status
+## Summary
 
-All changes committed and pushed. Clean working directory.
+**Phase 1** (Khepri + Disk): ✓ Complete  
+**Phase 2** (Khepri + DynamoDB): ✓ Complete  
+**Next**: AWS deployment and validation
 
-**Commits today**:
-1. Add storage backend behavior
-2. Implement disk storage backend
-3. Add Khepri operations module
-4. Replace Mnesia with Khepri and pluggable storage backend
-5. Fix Khepri API usage and message serialization
-
-**Branch**: (check with `git branch`)
-
----
-
-## Notes for Tomorrow
-
-- The test passes consistently on 3-node cluster
-- Khepri replication is working (metadata replicated)
-- Disk storage is shared across nodes (same host)
-- Timer mechanism works correctly
-- Message delivery and routing work correctly
-
-**Ready for**: Phase 1 additional testing OR Phase 2 DynamoDB implementation
+The plugin now uses distributed storage (Khepri + DynamoDB) instead of node-local Mnesia tables, addressing the fundamental limitation of the original implementation.

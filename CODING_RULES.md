@@ -372,3 +372,69 @@ Before writing ANY code that calls a function:
 **Root cause**: Not verifying functions exist before using them
 
 **Solution**: Follow the verification checklist EVERY TIME.
+
+---
+
+## Rule #19: AWS Error Response Format
+
+**Problem**: Assumed aws-erlang would return `{error, {<<"ResourceNotFoundException">>, _}}` but it returns `{error, ErrorMap, {StatusCode, Headers, Client}}`.
+
+**Lesson**: aws-erlang decodes JSON error responses into a map with `<<"__type">>` and `<<"Message">>` fields.
+
+**Process**:
+1. Match the 3-tuple error format: `{error, ErrorMap, {StatusCode, _, _}}`
+2. Extract `<<"__type">>` from ErrorMap
+3. Check for full exception name like `<<"com.amazonaws.dynamodb.v20120810#ResourceNotFoundException">>`
+
+**Example**:
+```erlang
+case aws_dynamodb:describe_table(Client, Request) of
+    {ok, _, _} ->
+        ok;
+    {error, ErrorMap, {_StatusCode, _Headers, _Client}} ->
+        case maps:get(<<"__type">>, ErrorMap, undefined) of
+            <<"com.amazonaws.dynamodb.v20120810#ResourceNotFoundException">> ->
+                %% Handle missing table
+                create_table(...);
+            _OtherError ->
+                {error, ErrorMap}
+        end
+end.
+```
+
+---
+
+## Rule #20: Application Dependencies vs Boot Steps
+
+**Problem**: Even though hackney was in the dependency chain, it wasn't started before our code ran during boot.
+
+**Lesson**: Application dependencies ensure apps are **loaded**, not **started** at the right time during boot steps.
+
+**Solution**: Explicitly start required applications in your code:
+```erlang
+init(Config) ->
+    {ok, _} = application:ensure_all_started(hackney),
+    %% Now safe to make HTTP requests
+    ...
+```
+
+**Alternative**: Create a boot step that starts the application, but this is less flexible than starting it where needed.
+
+---
+
+## Rule #21: Boot Step Return Values
+
+**Problem**: Boot step MFA called `application:ensure_all_started(hackney)` which returns `{ok, [Apps]}`, but boot steps expect `ok`.
+
+**Solution**: Wrapper function that returns `ok`:
+```erlang
+ensure_hackney_started() ->
+    {ok, _} = application:ensure_all_started(hackney),
+    ok.
+```
+
+Then use in boot step:
+```erlang
+-rabbit_boot_step({my_boot_step,
+                   [{mfa, {?MODULE, ensure_hackney_started, []}}]}).
+```
