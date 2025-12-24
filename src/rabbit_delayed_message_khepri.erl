@@ -48,14 +48,15 @@ store_message_metadata(Metadata) ->
 
     Bucket = timestamp_to_bucket(DeliveryTimestamp),
     Path = build_message_path(VHost, Exchange, Bucket, MessageId),
+    HexId = binary:encode_hex(MessageId, lowercase),
 
     case khepri:put(Path, Metadata) of
         ok ->
-            ?LOG_DEBUG("Stored delayed message metadata in Khepri: ~ts", [MessageId]),
+            ?LOG_DEBUG("Stored delayed message metadata in Khepri: ~s", [HexId]),
             ok;
         {error, Reason} ->
-            ?LOG_ERROR("Failed to store delayed message metadata ~ts in Khepri: ~tp",
-                      [MessageId, Reason]),
+            ?LOG_ERROR("Failed to store delayed message metadata ~s in Khepri: ~tp",
+                      [HexId, Reason]),
             %% TODO: Implement retry logic for production
             {error, {khepri_put_failed, MessageId, Reason}}
     end.
@@ -88,18 +89,19 @@ delete_message_metadata(Metadata) ->
 
     Bucket = timestamp_to_bucket(DeliveryTimestamp),
     Path = build_message_path(VHost, Exchange, Bucket, MessageId),
+    HexId = binary:encode_hex(MessageId, lowercase),
 
     case khepri:delete(Path) of
         ok ->
-            ?LOG_DEBUG("Deleted delayed message metadata from Khepri: ~ts", [MessageId]),
+            ?LOG_DEBUG("Deleted delayed message metadata from Khepri: ~s", [HexId]),
             ok;
         {error, {node_not_found, _}} ->
             %% Already deleted - idempotent operation
-            ?LOG_DEBUG("Delayed message metadata already deleted: ~ts", [MessageId]),
+            ?LOG_DEBUG("Delayed message metadata already deleted: ~s", [HexId]),
             ok;
         {error, Reason} ->
-            ?LOG_ERROR("Failed to delete delayed message metadata ~ts from Khepri: ~tp",
-                      [MessageId, Reason]),
+            ?LOG_ERROR("Failed to delete delayed message metadata ~s from Khepri: ~tp",
+                      [HexId, Reason]),
             {error, {khepri_delete_failed, MessageId, Reason}}
     end.
 

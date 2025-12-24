@@ -13,7 +13,7 @@ set -o pipefail
 declare -i num_messages=1
 declare -i min_delay=3
 declare -i max_delay=3
-declare -a hosts=("localhost:15672")
+declare -a hosts
 declare -i verbosity=0
 
 # Parse arguments
@@ -90,13 +90,7 @@ do
         printf "Error: --connect must be in format host:port (got: %s)\n" "$2" >&2
         exit 1
       fi
-      # First --connect replaces default
-      if (( ${#hosts[@]} == 1 )) && [[ "${hosts[0]}" == "localhost:15672" ]]
-      then
-        hosts=("$2")
-      else
-        hosts+=("$2")
-      fi
+      hosts+=("$2")
       shift 2
       ;;
     -v|--verbose)
@@ -110,6 +104,11 @@ do
       ;;
   esac
 done
+
+if (( ${#hosts[@]} == 0 ))
+then
+  hosts=("localhost:15672")
+fi
 
 # Validate arguments
 if (( num_messages < 1 ))
@@ -142,22 +141,15 @@ declare -r routing_key="test-key"
 # Round-robin host index
 declare -i current_host_index=0
 
-# Function to get next host in round-robin fashion
-get_next_host() {
+# Function to get current base URL (does not modify counter)
+get_base_url() {
   local host_port="${hosts[$current_host_index]}"
-  local host="${host_port%:*}"
-  local port="${host_port#*:}"
-
-  current_host_index=$(( (current_host_index + 1) % ${#hosts[@]} ))
-
-  printf "%s:%s" "$host" "$port"
+  printf "http://%s/api" "$host_port"
 }
 
-# Function to build base URL for current host
-get_base_url() {
-  local host_port
-  host_port=$(get_next_host)
-  printf "http://%s/api" "$host_port"
+# Function to advance to next host
+advance_host() {
+  current_host_index=$(( (current_host_index + 1) % ${#hosts[@]} ))
 }
 
 # Colors for output
@@ -200,6 +192,13 @@ publish_message() {
   local base_url
   base_url=$(get_base_url)
 
+  if (( verbosity >= 2 ))
+  then
+    log_info "Publishing to: $base_url (index was $current_host_index, now advancing)"
+  fi
+
+  advance_host
+
   http_code=$(curl -s -u "$rabbitmq_user:$rabbitmq_pass" \
     -w "%{http_code}" \
     -o /dev/null \
@@ -236,6 +235,7 @@ log_step "1/5" "Creating delayed message exchange: $exchange_name"
 declare -i http_code
 declare base_url
 base_url=$(get_base_url)
+advance_host
 
 http_code=$(curl -s -u "$rabbitmq_user:$rabbitmq_pass" \
   -w "%{http_code}" \
@@ -265,6 +265,7 @@ printf "\n"
 log_step "2/5" "Preparing queue: $queue_name"
 declare -i queue_check_code
 base_url=$(get_base_url)
+advance_host
 
 queue_check_code=$(curl -s -u "$rabbitmq_user:$rabbitmq_pass" \
   -w "%{http_code}" \
@@ -276,6 +277,7 @@ then
   log_info "Queue exists, purging..."
   declare -i purge_code
   base_url=$(get_base_url)
+  advance_host
 
   purge_code=$(curl -s -u "$rabbitmq_user:$rabbitmq_pass" \
     -w "%{http_code}" \
@@ -294,6 +296,7 @@ else
   log_info "Queue does not exist, creating..."
   declare -i create_code
   base_url=$(get_base_url)
+  advance_host
 
   create_code=$(curl -s -u "$rabbitmq_user:$rabbitmq_pass" \
     -w "%{http_code}" \
@@ -323,6 +326,7 @@ printf "\n"
 log_step "3/5" "Binding queue to exchange with routing key: $routing_key"
 declare -i bind_code
 base_url=$(get_base_url)
+advance_host
 
 bind_code=$(curl -s -u "$rabbitmq_user:$rabbitmq_pass" \
   -w "%{http_code}" \
@@ -393,6 +397,7 @@ printf "\n"
 log_info "Fetching messages from queue..."
 declare response
 base_url=$(get_base_url)
+advance_host
 
 response=$(curl -s -u "$rabbitmq_user:$rabbitmq_pass" \
   -X POST \

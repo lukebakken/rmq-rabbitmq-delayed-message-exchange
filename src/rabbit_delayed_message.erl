@@ -182,6 +182,8 @@ deliver_message(Metadata, Backend, StorageState, State) ->
       exchange := ExchangeBinName,
       vhost := VHost} = Metadata,
 
+    HexId = binary:encode_hex(MessageId, lowercase),
+
     %% Fetch payload from storage backend
     case Backend:fetch_message(MessageId, StorageState) of
         {ok, PayloadBinary, StorageState2} ->
@@ -208,7 +210,7 @@ deliver_message(Metadata, Backend, StorageState, State) ->
                     ExName = Exchange#exchange.name,
                     bump_routed_stats(ExName, Qs, State),
 
-                    ?LOG_DEBUG("Delayed message exchange: delivered message ~ts", [MessageId]),
+                    ?LOG_DEBUG("Delayed message exchange: delivered message ~s", [HexId]),
 
                     %% Delete from Khepri
                     _ = rabbit_delayed_message_khepri:delete_message_metadata(Metadata),
@@ -218,20 +220,20 @@ deliver_message(Metadata, Backend, StorageState, State) ->
                         {ok, StorageState3} ->
                             StorageState3;
                         {error, Reason} ->
-                            ?LOG_WARNING("Failed to delete message payload ~ts: ~tp",
-                                        [MessageId, Reason]),
+                            ?LOG_WARNING("Failed to delete message payload ~s: ~tp",
+                                        [HexId, Reason]),
                             StorageState2
                     end;
                 {error, not_found} ->
-                    ?LOG_WARNING("Exchange not found for delayed message ~ts, cleaning up",
-                                [MessageId]),
+                    ?LOG_WARNING("Exchange not found for delayed message ~s, cleaning up",
+                                [HexId]),
                     _ = rabbit_delayed_message_khepri:delete_message_metadata(Metadata),
                     _ = Backend:delete_message(MessageId, StorageState2),
                     StorageState2
             end;
         {error, Reason} ->
-            ?LOG_ERROR("Failed to fetch message payload ~ts: ~tp",
-                      [MessageId, Reason]),
+            ?LOG_ERROR("Failed to fetch message payload ~s: ~tp",
+                      [HexId, Reason]),
             %% TODO: Handle fetch failures - DLQ? Retry?
             StorageState
     end.
@@ -290,14 +292,16 @@ internal_delay_message(CurrTimer, Exchange, Message, Delay, Backend, StorageStat
                     end,
                     {{ok, NewTimer}, NewTimer, NewStorageState};
                 {error, Reason} ->
-                    ?LOG_ERROR("Failed to store message payload ~ts: ~tp",
-                              [MessageId, Reason]),
+                    HexId = binary:encode_hex(MessageId, lowercase),
+                    ?LOG_ERROR("Failed to store message payload ~s: ~tp",
+                              [HexId, Reason]),
                     %% TODO: Should we delete from Khepri on storage failure?
                     {{ok, CurrTimer}, CurrTimer, StorageState}
             end;
         {error, Reason} ->
-            ?LOG_ERROR("Failed to store message metadata ~ts in Khepri: ~tp",
-                      [MessageId, Reason]),
+            HexId = binary:encode_hex(MessageId, lowercase),
+            ?LOG_ERROR("Failed to store message metadata ~s in Khepri: ~tp",
+                      [HexId, Reason]),
             {{ok, CurrTimer}, CurrTimer, StorageState}
     end.
 

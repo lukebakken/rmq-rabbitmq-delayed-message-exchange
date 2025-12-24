@@ -49,11 +49,13 @@ store_message(MessageId, Payload, State = #disk_storage_state{base_dir = BaseDir
     FilePath = message_file_path(BaseDir, MessageId),
     case file:write_file(FilePath, Payload) of
         ok ->
-            ?LOG_DEBUG("Stored delayed message payload: ~ts", [MessageId]),
+            HexId = binary:encode_hex(MessageId, lowercase),
+            ?LOG_DEBUG("Stored delayed message payload: ~s (~B bytes)", [HexId, byte_size(Payload)]),
             {ok, State};
         {error, Reason} ->
-            ?LOG_ERROR("Failed to store delayed message payload ~ts: ~tp",
-                      [MessageId, Reason]),
+            HexId = binary:encode_hex(MessageId, lowercase),
+            ?LOG_ERROR("Failed to store delayed message payload ~s: ~tp",
+                      [HexId, Reason]),
             %% TODO: Implement retry logic for production
             {error, {write_failed, MessageId, Reason}}
     end.
@@ -65,14 +67,17 @@ fetch_message(MessageId, State = #disk_storage_state{base_dir = BaseDir}) ->
     FilePath = message_file_path(BaseDir, MessageId),
     case file:read_file(FilePath) of
         {ok, Payload} ->
-            ?LOG_DEBUG("Fetched delayed message payload: ~ts", [MessageId]),
+            HexId = binary:encode_hex(MessageId, lowercase),
+            ?LOG_DEBUG("Fetched delayed message payload: ~s (~B bytes)", [HexId, byte_size(Payload)]),
             {ok, Payload, State};
         {error, enoent} ->
-            ?LOG_WARNING("Delayed message payload not found: ~ts", [MessageId]),
+            HexId = binary:encode_hex(MessageId, lowercase),
+            ?LOG_WARNING("Delayed message payload not found: ~s", [HexId]),
             {error, {not_found, MessageId}};
         {error, Reason} ->
-            ?LOG_ERROR("Failed to fetch delayed message payload ~ts: ~tp",
-                      [MessageId, Reason]),
+            HexId = binary:encode_hex(MessageId, lowercase),
+            ?LOG_ERROR("Failed to fetch delayed message payload ~s: ~tp",
+                      [HexId, Reason]),
             %% TODO: Implement retry logic for production
             {error, {read_failed, MessageId, Reason}}
     end.
@@ -84,15 +89,18 @@ delete_message(MessageId, State = #disk_storage_state{base_dir = BaseDir}) ->
     FilePath = message_file_path(BaseDir, MessageId),
     case file:delete(FilePath) of
         ok ->
-            ?LOG_DEBUG("Deleted delayed message payload: ~ts", [MessageId]),
+            HexId = binary:encode_hex(MessageId, lowercase),
+            ?LOG_DEBUG("Deleted delayed message payload: ~s", [HexId]),
             {ok, State};
         {error, enoent} ->
             %% File already deleted - idempotent operation
-            ?LOG_DEBUG("Delayed message payload already deleted: ~ts", [MessageId]),
+            HexId = binary:encode_hex(MessageId, lowercase),
+            ?LOG_DEBUG("Delayed message payload already deleted: ~s", [HexId]),
             {ok, State};
         {error, Reason} ->
-            ?LOG_ERROR("Failed to delete delayed message payload ~ts: ~tp",
-                      [MessageId, Reason]),
+            HexId = binary:encode_hex(MessageId, lowercase),
+            ?LOG_ERROR("Failed to delete delayed message payload ~s: ~tp",
+                      [HexId, Reason]),
             %% TODO: Decide if delete failures should be fatal
             {error, {delete_failed, MessageId, Reason}}
     end.
@@ -106,6 +114,7 @@ terminate(#disk_storage_state{base_dir = BaseDir}) ->
 %% Internal functions
 %%--------------------------------------------------------------------
 
-%% Note: TODO optimize with binary construction, perhaps?
 message_file_path(BaseDir, MessageId) ->
-    filename:join(BaseDir, <<MessageId/binary, ".msg">>).
+    %% Convert binary message ID to hex string for filesystem-safe filename
+    HexId = binary:encode_hex(MessageId, lowercase),
+    filename:join(BaseDir, <<HexId/binary, ".msg">>).
