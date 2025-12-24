@@ -168,17 +168,17 @@ then
     echo "${response}"
   fi
   echo ""
-  echo "=========================================="
-  echo "TEST PASSED"
-  echo "=========================================="
+  echo -e "${green}=========================================="
+  echo -e "TEST PASSED"
+  echo -e "==========================================${nc}"
 else
   echo -e "${red}FAILED${nc} No message received" >&2
   echo ""
   echo "Response:"
   echo "${response}"
   echo ""
-  echo "=========================================="
-  echo "TEST FAILED"
-  echo "=========================================="
+  echo -e "${red}=========================================="
+  echo -e "TEST FAILED"
+  echo -e "==========================================${nc}"
   exit 1
 fi
