@@ -6,7 +6,7 @@ define PROJECT_APP_EXTRA_KEYS
 	{broker_version_requirements, ["4.2.0"]}
 endef
 
-DEPS = rabbit_common rabbit
+DEPS = rabbit_common rabbit khepri
 TEST_DEPS = ct_helper rabbitmq_ct_helpers rabbitmq_ct_client_helpers amqp_client
 dep_ct_helper = git https://github.com/extend/ct_helper.git master
 

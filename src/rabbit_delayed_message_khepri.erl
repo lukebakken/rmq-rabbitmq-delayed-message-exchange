@@ -28,7 +28,6 @@
     message_id := binary(),
     delivery_timestamp := integer(),
     routing_key := binary(),
-    headers := map(),
     exchange := binary(),
     vhost := binary(),
     created_at := integer()
@@ -50,7 +49,7 @@ store_message_metadata(Metadata) ->
     Bucket = timestamp_to_bucket(DeliveryTimestamp),
     Path = build_message_path(VHost, Exchange, Bucket, MessageId),
 
-    case rabbit_khepri:put(Path, Metadata) of
+    case khepri:put(Path, Metadata) of
         ok ->
             ?LOG_DEBUG("Stored delayed message metadata in Khepri: ~ts", [MessageId]),
             ok;
@@ -90,7 +89,7 @@ delete_message_metadata(Metadata) ->
     Bucket = timestamp_to_bucket(DeliveryTimestamp),
     Path = build_message_path(VHost, Exchange, Bucket, MessageId),
 
-    case rabbit_khepri:delete(Path) of
+    case khepri:delete(Path) of
         ok ->
             ?LOG_DEBUG("Deleted delayed message metadata from Khepri: ~ts", [MessageId]),
             ok;
@@ -108,7 +107,7 @@ delete_message_metadata(Metadata) ->
 list_all_messages() ->
     %% List all delayed messages across all vhosts and exchanges
     Pattern = ?DELAYED_MESSAGES_ROOT ++ [?KHEPRI_WILDCARD_STAR_STAR],
-    case rabbit_khepri:match(Pattern) of
+    case khepri:get_many(Pattern) of
         {ok, Result} ->
             %% Extract metadata from Khepri result
             lists:filtermap(

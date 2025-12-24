@@ -13,7 +13,7 @@
                    [{description, "delayed message storage setup"},
                     {mfa, {?MODULE, setup_storage, []}},
                     {cleanup, {?MODULE, cleanup_storage, []}},
-                    {requires, rabbit_khepri}]}).
+                    {requires, database}]}).
 
 -behaviour(gen_server).
 
@@ -243,26 +243,23 @@ internal_delay_message(CurrTimer, Exchange, Message, Delay, Backend, StorageStat
     %% Generate unique message ID
     MessageId = rabbit_guid:gen(),
 
-    %% Extract message payload
-    %% TODO: Properly serialize mc:state() for storage
+    %% Serialize entire message for storage
     Payload = term_to_binary(Message),
 
     %% Build metadata
     ExchangeName = Exchange#exchange.name,
-    _VHost = ExchangeName#resource.virtual_host,
-    _RoutingKey = case mc:routing_keys(Message) of
+    VHost = ExchangeName#resource.virtual_host,
+    RoutingKey = case mc:routing_keys(Message) of
                      [RK | _] -> RK;
                      [] -> <<>>
                  end,
-    _Headers = mc:get_annotation(headers, Message, #{}),
 
     Metadata = #{
         message_id => MessageId,
         delivery_timestamp => DelayTS,
-        routing_key => _RoutingKey,
-        headers => _Headers,
+        routing_key => RoutingKey,
         exchange => ExchangeName#resource.name,
-        vhost => _VHost,
+        vhost => VHost,
         created_at => Now
     },
 
