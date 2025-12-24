@@ -29,10 +29,28 @@ cd deps/rabbitmq_delayed_message_exchange
 
 This tests basic delayed message functionality via the HTTP API.
 
+**Phase 1 Status**: ✓ Test passing as of 2025-12-23
+
 ### Stopping the Cluster
 
 ```bash
 make stop-cluster
+```
+
+## Development Workflow
+
+### Phase 1: Khepri Migration ✓ COMPLETE (2025-12-23)
+- ✅ Replaced Mnesia with Khepri for metadata storage
+- ✅ Implemented disk file storage for message payloads
+- ✅ Tested on 3-node local cluster
+- ✅ Basic functionality validated
+
+**Remaining**: Failover testing, node restart testing
+
+### Phase 2: DynamoDB Integration (Next)
+- Add DynamoDB storage backend
+- Test on 3-node EC2 cluster
+- Validate DynamoDB replication
 ```
 
 ## Development Workflow

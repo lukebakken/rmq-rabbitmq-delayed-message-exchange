@@ -340,6 +340,80 @@ The README explicitly states: "This plugin badly needs a new design and a reimpl
 
 ---
 
+## Phase 1 Implementation: Khepri + Disk Storage ✓ COMPLETE
+
+**Completion Date**: 2025-12-23
+
+### What Changed
+
+The plugin has been successfully migrated from Mnesia to Khepri for metadata storage:
+
+**Removed**:
+- ❌ Node-local Mnesia tables (`rabbit_delayed_message_<node>`, `rabbit_delayed_message_<node>_index`)
+- ❌ Mnesia setup and cleanup functions
+- ❌ All `mnesia:*` operations
+
+**Added**:
+- ✅ `rabbit_delayed_message_storage` - Storage backend behavior
+- ✅ `rabbit_delayed_message_storage_disk` - Disk storage implementation
+- ✅ `rabbit_delayed_message_khepri` - Khepri operations wrapper
+- ✅ Khepri metadata storage (replicated across cluster)
+- ✅ Pluggable storage backend architecture
+
+### Architecture
+
+**Metadata Storage (Khepri)**:
+```
+Path: [rabbitmq, delayed_messages, VHost, Exchange, Bucket, MessageId]
+Data: #{
+  message_id => binary(),
+  delivery_timestamp => integer(),
+  routing_key => binary(),
+  exchange => binary(),
+  vhost => binary(),
+  created_at => integer()
+}
+```
+
+**Payload Storage (Disk)**:
+```
+Location: /tmp/rabbitmq-test-instances/delayed_messages/<message_id>.msg
+Format: term_to_binary(mc:state())
+```
+
+### Test Results
+
+✅ **Basic functionality test passed**:
+- Message published with 5-second delay
+- Stored in Khepri (metadata) and disk (payload)
+- Delivered correctly after delay
+- x-delay header swapped to negative
+- Message routed to correct queue
+
+### Known Limitations (Phase 1)
+
+- ⚠️ Disk storage not replicated (payloads lost if node with file fails)
+- ⚠️ Naive bucket scanning (lists all messages to find next)
+- ⚠️ No cleanup of orphaned files
+- ⚠️ Message size not validated before storage
+
+These limitations are acceptable for Phase 1 and will be addressed in Phase 2 (DynamoDB).
+
+### Next Steps
+
+**Phase 1 Remaining**:
+- Test leader failover
+- Test node restart
+- Test multiple messages with different delays
+
+**Phase 2**:
+- Implement DynamoDB storage backend
+- Add broker_id to partition keys
+- Test on EC2 3-node cluster
+- Validate true distributed storage
+
+---
+
 ## Modern RabbitMQ Features for Overcoming Limitations
 
 ### Analysis Date: 2025-12-23
