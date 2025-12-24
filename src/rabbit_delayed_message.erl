@@ -59,8 +59,13 @@ go() ->
     gen_server:cast(?MODULE, go).
 
 delay_message(Exchange, Message, Delay) ->
-    gen_server:call(?MODULE, {delay_message, Exchange, Message, Delay},
-                    infinity).
+    %% Find the globally registered delayed message process
+    case global:whereis_name(rabbit_delayed_message) of
+        Pid when is_pid(Pid) ->
+            gen_server:call(Pid, {delay_message, Exchange, Message, Delay}, infinity);
+        undefined ->
+            {error, not_running}
+    end.
 
 setup_storage() ->
     %% Storage backend initialization happens in init/1
@@ -87,27 +92,41 @@ messages_delayed(Exchange) ->
     length(Filtered).
 
 refresh_config() ->
-    gen_server:call(?MODULE, refresh_config).
+    %% Find the globally registered delayed message process
+    case global:whereis_name(rabbit_delayed_message) of
+        Pid when is_pid(Pid) ->
+            gen_server:call(Pid, refresh_config);
+        undefined ->
+            {error, not_running}
+    end.
 
 %%--------------------------------------------------------------------
 
 init([]) ->
-    %% Initialize storage backend
-    StorageBackend = rabbit_delayed_message_storage_disk,
-    StorageConfig = #{},
+    %% Register globally so we can be found from any node
+    case global:register_name(rabbit_delayed_message, self()) of
+        yes ->
+            %% Initialize storage backend
+            StorageBackend = rabbit_delayed_message_storage_disk,
+            StorageConfig = #{},
 
-    case StorageBackend:init(StorageConfig) of
-        {ok, StorageState} ->
-            ?LOG_INFO("Delayed message exchange: storage backend initialized (~tp)",
-                     [StorageBackend]),
-            _ = recover(),
-            {ok, #state{timer = maybe_delay_first(),
-                       storage_backend = StorageBackend,
-                       storage_state = StorageState}};
-        {error, Reason} ->
-            ?LOG_ERROR("Delayed message exchange: failed to initialize storage backend: ~tp",
-                      [Reason]),
-            {stop, {storage_init_failed, Reason}}
+            case StorageBackend:init(StorageConfig) of
+                {ok, StorageState} ->
+                    ?LOG_INFO("Delayed message exchange: storage backend initialized (~tp)",
+                             [StorageBackend]),
+                    _ = recover(),
+                    {ok, #state{timer = maybe_delay_first(),
+                               storage_backend = StorageBackend,
+                               storage_state = StorageState}};
+                {error, Reason} ->
+                    ?LOG_ERROR("Delayed message exchange: failed to initialize storage backend: ~tp",
+                              [Reason]),
+                    {stop, {storage_init_failed, Reason}}
+            end;
+        no ->
+            %% Another process already registered - this shouldn't happen with mirrored_supervisor
+            ?LOG_ERROR("Delayed message exchange: failed to register global name"),
+            {stop, name_already_registered}
     end.
 
 handle_call({delay_message, Exchange, Message, Delay},

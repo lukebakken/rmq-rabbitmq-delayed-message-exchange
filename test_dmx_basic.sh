@@ -194,7 +194,7 @@ publish_message() {
 
   if (( verbosity >= 2 ))
   then
-    log_info "Publishing to: $base_url (index was $current_host_index, now advancing)"
+    log_info "Publishing to: $base_url"
   fi
 
   advance_host

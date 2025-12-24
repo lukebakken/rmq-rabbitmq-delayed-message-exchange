@@ -9,7 +9,7 @@
 
 -include_lib("rabbit_common/include/rabbit.hrl").
 
--behaviour(supervisor2).
+-behaviour(mirrored_supervisor).
 
 -define(SERVER, ?MODULE).
 
@@ -24,7 +24,7 @@
                     {cleanup,     {?MODULE, stop, []}}]}).
 
 start_link() ->
-    supervisor2:start_link({local, ?SERVER}, ?MODULE, []).
+    mirrored_supervisor:start_link({local, ?SERVER}, ?SERVER, ?MODULE, []).
 
 init([]) ->
     {ok, {{one_for_one, 3, 10},
@@ -32,5 +32,5 @@ init([]) ->
             transient, ?WORKER_WAIT, worker, [rabbit_delayed_message]}]}}.
 
 stop() ->
-    ok = supervisor:terminate_child(rabbit_sup, ?MODULE),
-    ok = supervisor:delete_child(rabbit_sup, ?MODULE).
+    ok = mirrored_supervisor:terminate_child(rabbit_sup, ?MODULE),
+    ok = mirrored_supervisor:delete_child(rabbit_sup, ?MODULE).
